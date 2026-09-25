@@ -70,7 +70,7 @@ class VisionStudio(ctk.CTk):
         self.total_frames = 0
         self.source_fps = 25.0
         self.current_frame_idx = 0
-        self.is_playing = True
+        self.is_playing = False
         self.speed_factor = 1.0
         self.mirror_mode = True
 
@@ -93,6 +93,7 @@ class VisionStudio(ctk.CTk):
         self.current_raw_frame = None
         self.latest_display_frame = None
         self.current_detections = []
+        self.detected_count = 0
         self.fps_samples = []
         self.current_fps = 0.0
         self.camera_error_msg = None
@@ -193,7 +194,7 @@ class VisionStudio(ctk.CTk):
 
         self.btn_play = ctk.CTkButton(
             ctrl_bar,
-            text="⏸ Pause",
+            text="▶ Lecture",
             font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#27272a",
             hover_color="#3f3f46",
@@ -518,7 +519,13 @@ class VisionStudio(ctk.CTk):
                 dur_sec = int(self.total_frames / self.source_fps)
                 self.time_lbl_right.configure(text=f"{dur_sec // 60:02d}:{dur_sec % 60:02d}")
                 self.lbl_src_name.configure(text=f"Source : {os.path.basename(self.source_path)}")
-                self.lbl_stream_status.configure(text="● Vidéo chargée", text_color="#22c55e")
+                self.lbl_stream_status.configure(text="● Vidéo en pause (cliquez sur ▶ Lecture)", text_color="#a1a1aa")
+
+                # Read first frame so it is displayed immediately
+                ret, frame = self.cap.read()
+                if ret and frame is not None:
+                    self.current_raw_frame = frame
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
             self.current_frame_idx = 0
 
@@ -530,6 +537,12 @@ class VisionStudio(ctk.CTk):
 
     def _on_source_change(self, value):
         self.is_webcam = ("Webcam" in value)
+        if self.is_webcam:
+            self.is_playing = True
+            self.btn_play.configure(text="⏸ Pause")
+        else:
+            self.is_playing = False
+            self.btn_play.configure(text="▶ Lecture")
         self._open_stream()
         self.reprocess_current_frame()
 
