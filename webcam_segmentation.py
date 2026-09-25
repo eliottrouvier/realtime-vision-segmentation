@@ -85,8 +85,8 @@ def run_webcam(
         print(f"[INFO] Filtering active for: {[all_names[i] for i in target_ids]}")
 
     # 2. Open camera
-    print(f"\n[INFO] Initializing webcam at index {cam_index}...")
-    cap = cv2.VideoCapture(cam_index)
+    backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
+    cap = cv2.VideoCapture(cam_index, backend)
     if not cap.isOpened():
         print(f"[ERROR] Could not open webcam at index {cam_index}.")
         print("  Tips on macOS:")
