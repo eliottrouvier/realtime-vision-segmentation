@@ -1,70 +1,58 @@
 # Real-Time Video & Webcam Instance Segmentation
 
-Programme de détection d'objets et de segmentation d'instances en temps réel optimisé pour Mac Apple Silicon (**MPS**), propulsé par **YOLO11-seg** / **OpenCV**.
+Studio de détection d'objets et de segmentation d'instances en temps réel optimisé pour Mac Apple Silicon (**MPS**), propulsé par **YOLO11-seg** / **OpenCV**.
 
 ---
 
-## ⚡ Utilisation Universelle (`vision`)
+## ⚡ Démarrage Rapide (`vision`)
 
 La commande globale `vision` est installée dans votre terminal et accessible depuis n'importe quel dossier :
 
 ```bash
-# 1. Ouvrir l'interface graphique de bureau (GUI sombre avec boutons & filtres)
+# 1. Ouvrir Vision Studio (interface tout-en-un avec panneau de réglages sur le côté)
 vision
 
-# 2. Lancer directement le traitement d'une vidéo
-vision samples/pedestrians.avi
+# 2. Ouvrir directement une vidéo dans le studio
+vision chemin/vers/ma_video.mp4
 
-# 3. Lancer directement la webcam en direct
+# 3. Ouvrir directement la webcam dans le studio
 vision --webcam
-
-# 4. Filtrer des objets précis en ligne de commande
-vision samples/pedestrians.avi --target person
-vision --webcam --target person,"cell phone",cup
 ```
 
 ---
 
-## 🖥️ Interface Graphique Native de Bureau (`app_gui.py`)
+## 🎛️ Vision Studio — Tout-en-un avec Panneau Latéral
 
-En tapant simplement `vision`, une interface native sombre s'ouvre :
-- **🎥 Lancer la Webcam** en 1 clic.
-- **📁 Ouvrir une Vidéo** via le sélecteur natif de fichiers macOS.
-- **Cases à cocher thématiques** : Personnes, Véhicules, Électronique, Objets du quotidien ou 80 classes COCO.
-- **Filtre personnalisé** : saisissez n'importe quel mot-clé (ex: `dog, backpack`).
-- **Curseur de confiance interactif** (10% à 90%).
-- **Mode miroir et option d'enregistrement vidéo**.
-
----
-
-## 🎮 Contrôles au Clavier (Fenêtre en direct)
-
-| Touche | Action |
-| :---: | :--- |
-| **`Espace`** ou **`p`** | Mettre en pause / Reprendre la lecture |
-| **`s`** | Enregistrer un instantané (capture d'écran) de la frame courante |
-| **`f`** | *(Webcam)* Activer / désactiver le mode miroir horizontal |
-| **`q`** ou **`Échap`** | Quitter le programme proprement |
+L'interface se divise en deux zones parfaitement intégrées :
+- **À gauche : L'écran vidéo interactif**
+  - Affichage direct du flux avec masques d'instances et boîtes englobantes.
+  - **Barre de défilement temporelle (Timeline scrubber)** : cliquez ou glissez pour naviguer instantanément à n'importe quel moment de la vidéo.
+  - **Contrôles de transport** :
+    - `▶️ Lecture / ⏸️ Pause`
+    - `🔄 Recommencer (0:00)`
+    - **Sélecteur de vitesse** : `0.25x`, `0.5x`, `1x`, `1.5x`, `2x` (pour ralentir ou accélérer la vidéo).
+    - `📸 Capture` : enregistre un instantané haute définition.
+- **À droite : Le panneau latéral de réglages en direct**
+  - **Source Vidéo** : basculez en 1 clic entre **📁 Fichier Vidéo** et **🎥 Webcam en direct**.
+  - **Mode de Rendu** : basculez à la volée entre `Masques + Boîtes`, `Masques seuls` ou `Boîtes seules`.
+  - **Filtres d'objets en direct** : filtrez instantanément les détections (`Tous`, `Personnes`, `Véhicules`, `Électronique`, `Objets du quotidien`, ou filtre personnalisé).
+  - **Sensibilité** : curseur de seuil de confiance (10% à 90%).
+  - **Télémétrie en direct** : FPS réel (accélération MPS Apple Silicon) et compteur d'objets.
+  - **Bouton Quitter** : fermeture propre de l'application.
 
 ---
 
-## 🛠️ Options de la Ligne de Commande
+## 💻 Mode Terminal Sans GUI (CLI pur)
 
-| Option | Type | Défaut | Description |
-| :--- | :---: | :---: | :--- |
-| `source` | `str` | `samples/pedestrians.avi` | Chemin vers la vidéo d'entrée (MP4, AVI, MOV...) |
-| `--webcam` | flag | `False` | Ouvre directement le flux de la webcam |
-| `--target` | `str` | `all` | Classes à filtrer séparées par des virgules (ex: `person`, `car,bus,truck` ou `all`) |
-| `--conf` | `float` | `0.35` | Seuil de confiance minimal (entre 0.0 et 1.0) |
-| `--model` | `str` | `yolo11n-seg.pt` | Modèle Ultralytics (téléchargé automatiquement) |
-| `--device` | `str` | `auto` (`mps`) | Puce de calcul (`mps` pour Mac Apple Silicon, `cuda`, ou `cpu`) |
-| `--output` | `str` | `None` | Chemin de sortie pour enregistrer la vidéo résultante |
-| `--no-mirror` | flag | `False` | Désactive le miroir horizontal en mode webcam |
+Pour exécuter un traitement en ligne de commande pure (par exemple en tâche de fond ou sur serveur) :
+
+```bash
+vision --cli samples/pedestrians.avi --target person --output resultat.mp4
+```
 
 ---
 
-## 📈 Métriques & Performances
+## 📈 Performances Mesurées
 
-- **Matériel testé** : Apple Silicon (MPS)
-- **Débit continu** : **~25 - 32 FPS** en temps réel
-- **Segmentation** : Masques polygonaux semi-transparents par instance au pixel près.
+- **Accélération matérielle** : Apple Silicon MPS (`mps`)
+- **Cadence** : **25 à 32 FPS** en continu avec segmentation d'instances polygonales au pixel près.
