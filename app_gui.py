@@ -89,6 +89,14 @@ class VisionStudio(ctk.CTk):
         if not os.path.exists(self.source_path) and not self.is_webcam:
             self.source_path = os.path.join(PROJECT_DIR, "samples", "pedestrians.avi")
 
+        # Preset demo videos (Kinematics, pose, movements & segmentation)
+        self.sample_videos = {
+            "🚶 Piétons (Surveillance)": os.path.join(PROJECT_DIR, "samples", "pedestrians.avi"),
+            "💃 Danse & Posture (Mouvements amples)": os.path.join(PROJECT_DIR, "samples", "dance_movement.mp4"),
+            "🏋️ Fitness & Flexions (Squats & Membres)": os.path.join(PROJECT_DIR, "samples", "squats_workout.mp4"),
+            "🤸 Gainage & Pompes (Haut du corps)": os.path.join(PROJECT_DIR, "samples", "pushups_workout.mp4"),
+        }
+
         self.cap = None
         self.total_frames = 0
         self.source_fps = 25.0
@@ -380,9 +388,35 @@ class VisionStudio(ctk.CTk):
         self.seg_source.set("Webcam Direct" if self.is_webcam else "Fichier Vidéo")
         self.seg_source.pack(fill="x", padx=14, pady=(8, 8))
 
+        self.lbl_samples = ctk.CTkLabel(
+            card_source,
+            text="Vidéos de démonstration :",
+            font=ctk.CTkFont(size=11),
+            text_color="#a1a1aa"
+        )
+        self.lbl_samples.pack(anchor="w", padx=14, pady=(2, 4))
+
+        self.opt_sample_video = ctk.CTkOptionMenu(
+            card_source,
+            values=list(self.sample_videos.keys()),
+            command=self._on_sample_selected,
+            fg_color="#18181b",
+            button_color="#27272a",
+            button_hover_color="#3f3f46",
+            text_color="#f4f4f5",
+            height=32
+        )
+        initial_label = "🚶 Piétons (Surveillance)"
+        for k, v in self.sample_videos.items():
+            if os.path.abspath(v) == os.path.abspath(self.source_path):
+                initial_label = k
+                break
+        self.opt_sample_video.set(initial_label)
+        self.opt_sample_video.pack(fill="x", padx=14, pady=(0, 8))
+
         self.btn_browse = ctk.CTkButton(
             card_source,
-            text="Parcourir une vidéo (mp4, avi...)",
+            text="Parcourir un autre fichier...",
             font=ctk.CTkFont(size=12),
             fg_color="#1c1d22",
             hover_color="#27272a",
@@ -630,7 +664,57 @@ class VisionStudio(ctk.CTk):
             )
             if self.show_pose_box:
                 self.sw_pose_box.select()
-            self.sw_pose_box.pack(anchor="w", padx=14, pady=(4, 12))
+            self.sw_pose_box.pack(anchor="w", padx=14, pady=(4, 10))
+
+            # Quick sample switchers for Pose
+            tip_card = ctk.CTkFrame(card_pose, fg_color="#121215", corner_radius=6, border_width=1, border_color="#27272a")
+            tip_card.pack(fill="x", padx=14, pady=(0, 12))
+
+            ctk.CTkLabel(
+                tip_card,
+                text="Vidéos recommandées pour les articulations :",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#e4e4e7"
+            ).pack(anchor="w", padx=10, pady=(6, 4))
+
+            btn_box = ctk.CTkFrame(tip_card, fg_color="transparent")
+            btn_box.pack(fill="x", padx=10, pady=(0, 8))
+
+            ctk.CTkButton(
+                btn_box,
+                text="💃 Danse",
+                font=ctk.CTkFont(size=11),
+                fg_color="#1c1d22",
+                hover_color="#27272a",
+                text_color="#d4d4d8",
+                width=72,
+                height=26,
+                command=lambda: self._select_sample_by_key("💃 Danse & Posture (Mouvements amples)")
+            ).pack(side="left", padx=(0, 4))
+
+            ctk.CTkButton(
+                btn_box,
+                text="🏋️ Fitness",
+                font=ctk.CTkFont(size=11),
+                fg_color="#1c1d22",
+                hover_color="#27272a",
+                text_color="#d4d4d8",
+                width=72,
+                height=26,
+                command=lambda: self._select_sample_by_key("🏋️ Fitness & Flexions (Squats & Membres)")
+            ).pack(side="left", padx=4)
+
+            ctk.CTkButton(
+                btn_box,
+                text="🤸 Pompes",
+                font=ctk.CTkFont(size=11),
+                fg_color="#1c1d22",
+                hover_color="#27272a",
+                text_color="#d4d4d8",
+                width=72,
+                height=26,
+                command=lambda: self._select_sample_by_key("🤸 Gainage & Pompes (Haut du corps)")
+            ).pack(side="left", padx=4)
 
     # ==============================================================
     # MODE SPECIFIC CALLBACKS
@@ -702,12 +786,16 @@ class VisionStudio(ctk.CTk):
                 self.timeline_slider.configure(state="disabled")
                 self.btn_rewind.configure(state="disabled")
                 self.btn_browse.configure(state="disabled")
+                if hasattr(self, "opt_sample_video"):
+                    self.opt_sample_video.configure(state="disabled")
                 self.time_lbl_left.configure(text="LIVE")
                 self.time_lbl_right.configure(text="LIVE")
                 self.lbl_src_name.configure(text="Source : Webcam HD (macOS)")
             else:
                 self.btn_fix_camera.pack_forget()
                 self.btn_browse.configure(state="normal")
+                if hasattr(self, "opt_sample_video"):
+                    self.opt_sample_video.configure(state="normal")
                 self.timeline_slider.configure(state="normal")
                 self.btn_rewind.configure(state="normal")
 
@@ -743,11 +831,34 @@ class VisionStudio(ctk.CTk):
         if self.is_webcam:
             self.is_playing = True
             self.btn_play.configure(text="⏸ Pause")
+            if hasattr(self, "opt_sample_video"):
+                self.opt_sample_video.configure(state="disabled")
+            self.btn_browse.configure(state="disabled")
         else:
             self.is_playing = False
             self.btn_play.configure(text="▶ Lecture")
+            if hasattr(self, "opt_sample_video"):
+                self.opt_sample_video.configure(state="normal")
+            self.btn_browse.configure(state="normal")
         self._open_stream()
         self.reprocess_current_frame()
+
+    def _select_sample_by_key(self, key):
+        if key in self.sample_videos:
+            if hasattr(self, "opt_sample_video"):
+                self.opt_sample_video.set(key)
+            self._on_sample_selected(key)
+
+    def _on_sample_selected(self, choice):
+        target = self.sample_videos.get(choice)
+        if target and os.path.exists(target):
+            self.source_path = target
+            self.is_webcam = False
+            self.seg_source.set("Fichier Vidéo")
+            self.is_playing = False
+            self.btn_play.configure(text="▶ Lecture")
+            self._open_stream()
+            self.reprocess_current_frame()
 
     def browse_video(self):
         chosen = filedialog.askopenfilename(
@@ -759,6 +870,10 @@ class VisionStudio(ctk.CTk):
             self.source_path = chosen
             self.is_webcam = False
             self.seg_source.set("Fichier Vidéo")
+            if hasattr(self, "opt_sample_video"):
+                self.opt_sample_video.set("📁 " + os.path.basename(chosen))
+            self.is_playing = False
+            self.btn_play.configure(text="▶ Lecture")
             self._open_stream()
             self.reprocess_current_frame()
 

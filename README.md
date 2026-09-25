@@ -42,6 +42,17 @@ Basculez instantanément en un clic entre 3 paradigmes de vision grâce aux ongl
 
 ---
 
+## 🎬 Vidéos de Démonstration Incluses
+
+Un sélecteur rapide directement accessible dans le panneau latéral permet de basculer instantanément entre plusieurs séquences d'analyse :
+
+1. **🚶 Piétons (`pedestrians.avi`)** : Surveillance urbaine, idéal pour la segmentation multi-classes et YOLO-World.
+2. **💃 Danse & Posture (`dance_movement.mp4`)** : Mouvements amples, déplacements corporels et gestuelle fluide pour l'analyse articulaire.
+3. **🏋️ Fitness & Flexions (`squats_workout.mp4`)** : Squats en 1080p HD, idéal pour observer la cinématique des genoux, hanches et coudes.
+4. **🤸 Gainage & Pompes (`pushups_workout.mp4`)** : Mouvements horizontaux sur ballon de gym, analyse de l'alignement du rachis et des bras.
+
+---
+
 ## 🎮 Contrôles de Lecture & Panneau Latéral
 
 - **Barre temporelle (Scrubber)** : naviguez instantanément à n'importe quel moment de la vidéo.

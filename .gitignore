@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pt
 *.mp4
+!samples/*.mp4
 output_test.mp4
 screenshot_*.jpg
 .DS_Store
