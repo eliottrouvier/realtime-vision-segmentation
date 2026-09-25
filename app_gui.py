@@ -1,13 +1,12 @@
 """
-Vision Studio — Minimalist Real-Time Detection & Segmentation
---------------------------------------------------------------
-Ultra-responsive, sleek Apple Pro / Linear styled interface.
-Features:
-- Robust macOS camera capture (AVFoundation) with permission diagnostics
-- Instant reactivity: every setting (filters, mode, confidence) re-renders live even when paused
-- Clean monochromatic dark palette (Deep Zinc #09090b & slate accents)
-- Timeline scrubber with direct frame seek
-- Real-time speed tuning (0.25x to 2x) and screenshot capture
+Vision Studio — Multi-Mode Real-Time Computer Vision Suite
+-----------------------------------------------------------
+Features 3 distinct vision paradigms switchable via sleek top tabs:
+1. 🟦 Segmentation (YOLO11-seg) — 80 COCO classes with alpha-blended instance masks
+2. 🌍 Détection Universelle (YOLO-World) — Open-vocabulary detection with natural language text prompts
+3. 🦴 Squelette & Posture (YOLO-Pose) — Real-time tracking of 17 body joints, arms, legs, and posture
+
+Apple Pro / Linear minimalist design, instant reactivity, and robust AVFoundation webcam support.
 """
 
 import os
@@ -41,24 +40,48 @@ def generate_color_palette(num_classes=80):
     return np.random.randint(60, 240, size=(num_classes, 3), dtype=np.uint8)
 
 
+# COCO 17 Keypoints definitions for Pose
+LIMBS = [
+    (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),   # Shoulders & arms
+    (5, 11), (6, 12), (11, 12),               # Torso
+    (11, 13), (13, 15), (12, 14), (14, 16),   # Hips & legs
+    (0, 1), (0, 2), (1, 3), (2, 4)            # Head & face
+]
+
+LIMB_COLORS = [
+    (255, 140, 0), (255, 0, 128), (0, 240, 255), (0, 140, 255), (140, 0, 255),
+    (0, 255, 140), (140, 255, 0), (255, 230, 0),
+    (0, 220, 255), (0, 120, 255), (255, 120, 0), (255, 60, 0),
+    (180, 180, 180), (180, 180, 180), (140, 140, 140), (140, 140, 140)
+]
+
+KEYPOINT_NAMES = [
+    "Nez", "Oeil G", "Oeil D", "Oreille G", "Oreille D",
+    "Epaule G", "Epaule D", "Coude G", "Coude D", "Poignet G", "Poignet D",
+    "Hanche G", "Hanche D", "Genou G", "Genou D", "Cheville G", "Cheville D"
+]
+
+
 class VisionStudio(ctk.CTk):
     def __init__(self, initial_source=None, is_webcam=False):
         super().__init__()
 
-        # Window Setup (Sleek Apple Pro Theme)
+        # Window Setup
         self.title("Vision Studio")
-        self.geometry("1340x840")
-        self.minsize(1120, 720)
+        self.geometry("1380x880")
+        self.minsize(1160, 740)
         ctk.set_appearance_mode("dark")
-
-        # Color Theme: Deep Zinc / Linear Style
         self.configure(fg_color="#09090b")
 
-        # Runtime Engine
         self.device = get_default_device()
-        self.model_name = "yolo11n-seg.pt"
-        self.model = YOLO(self.model_name)
-        self.color_palette = generate_color_palette(len(self.model.names))
+
+        # Multi-model management (lazy-loaded / cached)
+        self.models = {}
+        self.current_mode = "segmentation"  # "segmentation", "world", "pose"
+
+        # Initialize primary segmentation model
+        self.models["segmentation"] = YOLO("yolo11n-seg.pt")
+        self.color_palette = generate_color_palette(80)
 
         # Media State
         self.is_webcam = is_webcam
@@ -70,17 +93,14 @@ class VisionStudio(ctk.CTk):
         self.total_frames = 0
         self.source_fps = 25.0
         self.current_frame_idx = 0
-        self.is_playing = False
+        self.is_playing = False  # Start paused on pedestrian video by default
         self.speed_factor = 1.0
         self.mirror_mode = True
 
-        # Pipeline Options
-        self.display_mode = "both"  # "both", "masks", "boxes"
-        self.show_labels = True
-        self.conf_threshold = 0.35
-        self.active_targets = None  # None = All 80 COCO classes
-
-        self.target_presets = {
+        # Mode 1: Segmentation settings
+        self.seg_display_mode = "both"  # "both", "masks", "boxes"
+        self.seg_targets = None
+        self.seg_presets = {
             "Tous les objets (80)": None,
             "Personnes uniquement": ["person"],
             "Véhicules": ["car", "bicycle", "motorcycle", "bus", "truck"],
@@ -88,20 +108,36 @@ class VisionStudio(ctk.CTk):
             "Objets du quotidien": ["bottle", "cup", "chair", "backpack", "handbag"]
         }
 
-        # Frame buffers
+        # Mode 2: YOLO-World settings
+        self.world_classes = [
+            "person", "jacket", "shirt", "pants", "shoes", "glasses", "watch",
+            "chair", "table", "laptop", "phone", "bottle", "cup", "backpack", "bag"
+        ]
+        self.world_initialized = False
+
+        # Mode 3: Pose settings
+        self.show_skeleton = True
+        self.show_joints = True
+        self.show_pose_box = False
+
+        # Global parameters
+        self.show_labels = True
+        self.conf_threshold = 0.35
+
+        # Frame buffers & locks
         self.lock = threading.Lock()
         self.current_raw_frame = None
         self.latest_display_frame = None
-        self.current_detections = []
         self.detected_count = 0
         self.fps_samples = []
         self.current_fps = 0.0
         self.camera_error_msg = None
 
-        # Threading control
+        # Build UI and open stream
         self.running = True
         self._build_ui()
         self._open_stream()
+        self.reprocess_current_frame()
 
         # Background stream thread
         self.worker_thread = threading.Thread(target=self._stream_loop, daemon=True)
@@ -111,23 +147,89 @@ class VisionStudio(ctk.CTk):
         self._gui_refresh()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    def _get_model(self, mode):
+        if mode not in self.models:
+            if mode == "world":
+                m = YOLO("yolov8s-worldv2.pt")
+                try:
+                    m.set_classes(self.world_classes)
+                except Exception:
+                    pass
+                self.models["world"] = m
+                self.world_initialized = True
+            elif mode == "pose":
+                self.models["pose"] = YOLO("yolo11n-pose.pt")
+        return self.models.get(mode)
+
     # ==============================================================
-    # UI CONSTRUCTION (Minimalist Apple Pro / Linear Design)
+    # UI CONSTRUCTION (Top Tabs & Two-Pane Architecture)
     # ==============================================================
     def _build_ui(self):
+        # Master grid: Row 0 = Top Tab Bar, Row 1 = Main Body
         self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=0, minsize=370)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=0)
+        self.grid_rowconfigure(1, weight=1)
 
         # --------------------------------------------------------------
-        # LEFT PANE: Video Canvas & Transport Bar
+        # TOP BAR: Mode Tabs (Sleek Apple Pro Toolbar)
         # --------------------------------------------------------------
-        left_frame = ctk.CTkFrame(self, fg_color="#09090b", corner_radius=0)
+        top_bar = ctk.CTkFrame(self, fg_color="#121215", corner_radius=0, height=54, border_width=1, border_color="#27272a")
+        top_bar.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
+        top_bar.grid_propagate(False)
+
+        # Brand Title
+        brand_lbl = ctk.CTkLabel(
+            top_bar,
+            text="👁 Vision Studio",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#f4f4f5"
+        )
+        brand_lbl.pack(side="left", padx=(20, 24))
+
+        # Mode Tabs Selector
+        self.mode_tabs = ctk.CTkSegmentedButton(
+            top_bar,
+            values=["🟦 Segmentation (YOLO11)", "🌍 Détection Universelle (YOLO-World)", "🦴 Articulations & Squelette (YOLO-Pose)"],
+            command=self._on_tab_switch,
+            fg_color="#18181b",
+            selected_color="#27272a",
+            selected_hover_color="#3f3f46",
+            unselected_color="#18181b",
+            text_color="#f4f4f5",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=34
+        )
+        self.mode_tabs.set("🟦 Segmentation (YOLO11)")
+        self.mode_tabs.pack(side="left", padx=10)
+
+        # Device pill on right
+        device_pill = ctk.CTkLabel(
+            top_bar,
+            text=f"● {self.device.upper()} Accelerated",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#22c55e",
+            fg_color="#18181b",
+            corner_radius=12,
+            padx=12,
+            pady=4
+        )
+        device_pill.pack(side="right", padx=20)
+
+        # --------------------------------------------------------------
+        # MAIN BODY: Left Video & Right Side Settings Panel
+        # --------------------------------------------------------------
+        body_frame = ctk.CTkFrame(self, fg_color="#09090b", corner_radius=0)
+        body_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        body_frame.grid_columnconfigure(0, weight=1)
+        body_frame.grid_columnconfigure(1, weight=0, minsize=370)
+        body_frame.grid_rowconfigure(0, weight=1)
+
+        # Left: Video canvas & transport
+        left_frame = ctk.CTkFrame(body_frame, fg_color="#09090b", corner_radius=0)
         left_frame.grid(row=0, column=0, sticky="nsew", padx=0, pady=0)
         left_frame.grid_rowconfigure(0, weight=1)
         left_frame.grid_columnconfigure(0, weight=1)
 
-        # Video Display Container
         self.display_container = ctk.CTkFrame(
             left_frame,
             fg_color="#000000",
@@ -135,7 +237,7 @@ class VisionStudio(ctk.CTk):
             border_width=1,
             border_color="#27272a"
         )
-        self.display_container.grid(row=0, column=0, sticky="nsew", padx=16, pady=(16, 8))
+        self.display_container.grid(row=0, column=0, sticky="nsew", padx=16, pady=(12, 8))
         self.display_container.grid_rowconfigure(0, weight=1)
         self.display_container.grid_columnconfigure(0, weight=1)
 
@@ -188,7 +290,7 @@ class VisionStudio(ctk.CTk):
         )
         self.time_lbl_right.pack(side="right")
 
-        # Playback Controls Bar
+        # Transport Controls
         ctrl_bar = ctk.CTkFrame(bottom_toolbar, fg_color="transparent")
         ctrl_bar.pack(fill="x", padx=16, pady=(4, 10))
 
@@ -220,7 +322,6 @@ class VisionStudio(ctk.CTk):
         )
         self.btn_rewind.pack(side="left", padx=4)
 
-        # Speed Segment
         ctk.CTkLabel(ctrl_bar, text="Vitesse", font=ctk.CTkFont(size=12), text_color="#a1a1aa").pack(side="left", padx=(16, 8))
         self.seg_speed = ctk.CTkSegmentedButton(
             ctrl_bar,
@@ -236,7 +337,6 @@ class VisionStudio(ctk.CTk):
         self.seg_speed.set("1x")
         self.seg_speed.pack(side="left", padx=4)
 
-        # Snapshot Button
         self.btn_snap = ctk.CTkButton(
             ctrl_bar,
             text="Capture HD",
@@ -252,36 +352,20 @@ class VisionStudio(ctk.CTk):
         self.btn_snap.pack(side="right")
 
         # --------------------------------------------------------------
-        # RIGHT PANE: Modern Minimalist Settings Sidebar
+        # RIGHT PANE: Side Settings Sidebar
         # --------------------------------------------------------------
-        right_frame = ctk.CTkScrollableFrame(
-            self,
+        self.right_frame = ctk.CTkScrollableFrame(
+            body_frame,
             fg_color="#121215",
             corner_radius=0,
             border_width=1,
             border_color="#27272a",
             width=370
         )
-        right_frame.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+        self.right_frame.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
 
-        # Header Title
-        ctk.CTkLabel(
-            right_frame,
-            text="Vision Studio",
-            font=ctk.CTkFont(size=18, weight="bold"),
-            text_color="#f4f4f5"
-        ).pack(anchor="w", padx=16, pady=(16, 2))
-
-        self.lbl_stream_status = ctk.CTkLabel(
-            right_frame,
-            text="● Flux actif",
-            font=ctk.CTkFont(size=12),
-            text_color="#22c55e"
-        )
-        self.lbl_stream_status.pack(anchor="w", padx=16, pady=(0, 16))
-
-        # --- Section 1: Source Switcher ---
-        card_source = self._make_card(right_frame, "Source d'Entrée")
+        # Source Selection Card
+        card_source = self._make_card(self.right_frame, "Source d'Entrée")
 
         self.seg_source = ctk.CTkSegmentedButton(
             card_source,
@@ -308,7 +392,6 @@ class VisionStudio(ctk.CTk):
         )
         self.btn_browse.pack(fill="x", padx=14, pady=(0, 12))
 
-        # Camera Permission Fix Button (Hidden by default, shown if needed)
         self.btn_fix_camera = ctk.CTkButton(
             card_source,
             text="Autoriser la caméra dans Réglages",
@@ -320,87 +403,14 @@ class VisionStudio(ctk.CTk):
             command=self._open_macos_camera_settings
         )
 
-        # --- Section 2: Display & Overlay Mode ---
-        card_mode = self._make_card(right_frame, "Rendu & Segmentation")
+        # Container for Mode-Specific Controls (Dynamically switched on Tab change)
+        self.mode_controls_container = ctk.CTkFrame(self.right_frame, fg_color="transparent")
+        self.mode_controls_container.pack(fill="x", padx=0, pady=0)
 
-        self.seg_display = ctk.CTkSegmentedButton(
-            card_mode,
-            values=["Masques + Boîtes", "Masques seuls", "Boîtes seules"],
-            command=self._on_display_mode_change,
-            fg_color="#18181b",
-            selected_color="#27272a",
-            selected_hover_color="#3f3f46",
-            unselected_color="#18181b",
-            height=30
-        )
-        self.seg_display.set("Masques + Boîtes")
-        self.seg_display.pack(fill="x", padx=14, pady=(8, 10))
+        self._render_mode_controls()
 
-        self.sw_labels = ctk.CTkSwitch(
-            card_mode,
-            text="Afficher labels & indices de confiance",
-            font=ctk.CTkFont(size=12),
-            command=self._on_param_modified,
-            progress_color="#e4e4e7"
-        )
-        self.sw_labels.select()
-        self.sw_labels.pack(anchor="w", padx=14, pady=4)
-
-        self.sw_mirror = ctk.CTkSwitch(
-            card_mode,
-            text="Mode miroir horizontal",
-            font=ctk.CTkFont(size=12),
-            command=self._on_param_modified,
-            progress_color="#e4e4e7"
-        )
-        self.sw_mirror.select()
-        self.sw_mirror.pack(anchor="w", padx=14, pady=(4, 12))
-
-        # --- Section 3: Live Target Filtering ---
-        card_targets = self._make_card(right_frame, "Filtre d'Objets en Direct")
-
-        self.opt_preset = ctk.CTkOptionMenu(
-            card_targets,
-            values=list(self.target_presets.keys()),
-            command=self._on_preset_selected,
-            fg_color="#18181b",
-            button_color="#27272a",
-            button_hover_color="#3f3f46",
-            text_color="#f4f4f5",
-            height=32
-        )
-        self.opt_preset.set("Tous les objets (80)")
-        self.opt_preset.pack(fill="x", padx=14, pady=(8, 8))
-
-        ctk.CTkLabel(card_targets, text="Filtre personnalisé :", font=ctk.CTkFont(size=11), text_color="#71717a").pack(anchor="w", padx=14, pady=(2, 2))
-        
-        entry_row = ctk.CTkFrame(card_targets, fg_color="transparent")
-        entry_row.pack(fill="x", padx=14, pady=(0, 12))
-
-        self.entry_custom = ctk.CTkEntry(
-            entry_row,
-            placeholder_text="ex: person, car, cup",
-            fg_color="#18181b",
-            border_color="#27272a",
-            height=30
-        )
-        self.entry_custom.pack(side="left", fill="x", expand=True, padx=(0, 6))
-        self.entry_custom.bind("<Return>", lambda e: self._apply_custom_filter())
-
-        self.btn_apply = ctk.CTkButton(
-            entry_row,
-            text="OK",
-            width=36,
-            height=30,
-            fg_color="#27272a",
-            hover_color="#3f3f46",
-            command=self._apply_custom_filter
-        )
-        self.btn_apply.pack(side="right")
-
-        # --- Section 4: Confidence Tuning ---
-        card_conf = self._make_card(right_frame, "Seuil de Confiance")
-
+        # Shared: Confidence Card
+        card_conf = self._make_card(self.right_frame, "Seuil de Confiance")
         self.lbl_conf = ctk.CTkLabel(card_conf, text="Confiance : 35%", font=ctk.CTkFont(size=12), text_color="#a1a1aa")
         self.lbl_conf.pack(anchor="w", padx=14, pady=(8, 4))
 
@@ -418,9 +428,8 @@ class VisionStudio(ctk.CTk):
         self.slider_conf.set(0.35)
         self.slider_conf.pack(fill="x", padx=14, pady=(0, 14))
 
-        # --- Section 5: Telemetry Status ---
-        card_telemetry = self._make_card(right_frame, "Télémétrie Système")
-
+        # Shared: Telemetry Card
+        card_telemetry = self._make_card(self.right_frame, "Télémétrie Système")
         self.lbl_fps = ctk.CTkLabel(card_telemetry, text=f"FPS : 0.0 ({self.device.upper()})", font=ctk.CTkFont(size=12, weight="bold"), text_color="#f4f4f5")
         self.lbl_fps.pack(anchor="w", padx=14, pady=(8, 2))
 
@@ -432,7 +441,7 @@ class VisionStudio(ctk.CTk):
 
         # Quit Button
         self.btn_close = ctk.CTkButton(
-            right_frame,
+            self.right_frame,
             text="Quitter l'application",
             font=ctk.CTkFont(size=12),
             fg_color="#1c1d22",
@@ -461,7 +470,206 @@ class VisionStudio(ctk.CTk):
         return card
 
     # ==============================================================
-    # STREAM ACQUISITION & HARDWARE INITIALIZATION
+    # DYNAMIC MODE SWITCHER & SETTINGS CARDS
+    # ==============================================================
+    def _on_tab_switch(self, value):
+        if "Segmentation" in value:
+            self.current_mode = "segmentation"
+        elif "Universelle" in value:
+            self.current_mode = "world"
+        elif "Squelette" in value:
+            self.current_mode = "pose"
+
+        # Lazy load model in background if needed
+        self._get_model(self.current_mode)
+        self._render_mode_controls()
+        self.reprocess_current_frame()
+
+    def _render_mode_controls(self):
+        # Clear existing mode controls
+        for widget in self.mode_controls_container.winfo_children():
+            widget.destroy()
+
+        if self.current_mode == "segmentation":
+            # --- Segmentation Options ---
+            card_seg = self._make_card(self.mode_controls_container, "Options de Segmentation")
+
+            self.seg_display = ctk.CTkSegmentedButton(
+                card_seg,
+                values=["Masques + Boîtes", "Masques seuls", "Boîtes seules"],
+                command=self._on_seg_display_change,
+                fg_color="#18181b",
+                selected_color="#27272a",
+                selected_hover_color="#3f3f46",
+                unselected_color="#18181b",
+                height=30
+            )
+            mode_map = {"both": "Masques + Boîtes", "masks": "Masques seuls", "boxes": "Boîtes seules"}
+            self.seg_display.set(mode_map.get(self.seg_display_mode, "Masques + Boîtes"))
+            self.seg_display.pack(fill="x", padx=14, pady=(8, 10))
+
+            card_targets = self._make_card(self.mode_controls_container, "Filtre d'Objets COCO (80)")
+            self.opt_preset = ctk.CTkOptionMenu(
+                card_targets,
+                values=list(self.seg_presets.keys()),
+                command=self._on_seg_preset_selected,
+                fg_color="#18181b",
+                button_color="#27272a",
+                button_hover_color="#3f3f46",
+                text_color="#f4f4f5",
+                height=32
+            )
+            self.opt_preset.set("Tous les objets (80)")
+            self.opt_preset.pack(fill="x", padx=14, pady=(8, 12))
+
+        elif self.current_mode == "world":
+            # --- YOLO-World (Open-Vocabulary) Options ---
+            card_world = self._make_card(self.mode_controls_container, "Vocabulaire Ouvert (YOLO-World)")
+
+            ctk.CTkLabel(
+                card_world,
+                text="Objets détectés en direct (langage naturel) :",
+                font=ctk.CTkFont(size=11),
+                text_color="#a1a1aa"
+            ).pack(anchor="w", padx=14, pady=(6, 4))
+
+            self.txt_world_classes = ctk.CTkTextbox(
+                card_world,
+                height=80,
+                fg_color="#18181b",
+                border_width=1,
+                border_color="#27272a",
+                font=ctk.CTkFont(size=11)
+            )
+            self.txt_world_classes.pack(fill="x", padx=14, pady=(0, 8))
+            self.txt_world_classes.insert("1.0", ", ".join(self.world_classes))
+
+            btn_update_world = ctk.CTkButton(
+                card_world,
+                text="Mettre à jour les classes",
+                font=ctk.CTkFont(size=11),
+                fg_color="#27272a",
+                hover_color="#3f3f46",
+                height=30,
+                command=self._apply_world_classes
+            )
+            btn_update_world.pack(fill="x", padx=14, pady=(0, 10))
+
+            # Preset buttons
+            presets_row = ctk.CTkFrame(card_world, fg_color="transparent")
+            presets_row.pack(fill="x", padx=14, pady=(0, 12))
+
+            ctk.CTkButton(
+                presets_row,
+                text="Vêtements",
+                font=ctk.CTkFont(size=10),
+                width=65,
+                height=26,
+                fg_color="#1c1d22",
+                hover_color="#27272a",
+                command=lambda: self._set_world_preset(["person", "jacket", "shirt", "shoes", "glasses", "watch", "backpack"])
+            ).pack(side="left", padx=(0, 4))
+
+            ctk.CTkButton(
+                presets_row,
+                text="Bureau",
+                font=ctk.CTkFont(size=10),
+                width=65,
+                height=26,
+                fg_color="#1c1d22",
+                hover_color="#27272a",
+                command=lambda: self._set_world_preset(["laptop", "phone", "keyboard", "mouse", "cup", "bottle", "chair", "pen"])
+            ).pack(side="left", padx=4)
+
+            ctk.CTkButton(
+                presets_row,
+                text="Général",
+                font=ctk.CTkFont(size=10),
+                width=65,
+                height=26,
+                fg_color="#1c1d22",
+                hover_color="#27272a",
+                command=lambda: self._set_world_preset([
+                    "person", "jacket", "shirt", "pants", "shoes", "glasses", "watch",
+                    "chair", "table", "laptop", "phone", "bottle", "cup", "backpack", "bag"
+                ])
+            ).pack(side="left", padx=4)
+
+        elif self.current_mode == "pose":
+            # --- Pose / Skeleton Options ---
+            card_pose = self._make_card(self.mode_controls_container, "Squelette & Articulations")
+
+            self.sw_skel = ctk.CTkSwitch(
+                card_pose,
+                text="Tracer les os / membres (lignes)",
+                font=ctk.CTkFont(size=12),
+                command=self._on_pose_toggles,
+                progress_color="#e4e4e7"
+            )
+            if self.show_skeleton:
+                self.sw_skel.select()
+            self.sw_skel.pack(anchor="w", padx=14, pady=(8, 4))
+
+            self.sw_joints = ctk.CTkSwitch(
+                card_pose,
+                text="Afficher les 17 articulations (points)",
+                font=ctk.CTkFont(size=12),
+                command=self._on_pose_toggles,
+                progress_color="#e4e4e7"
+            )
+            if self.show_joints:
+                self.sw_joints.select()
+            self.sw_joints.pack(anchor="w", padx=14, pady=4)
+
+            self.sw_pose_box = ctk.CTkSwitch(
+                card_pose,
+                text="Boîte englobante de la personne",
+                font=ctk.CTkFont(size=12),
+                command=self._on_pose_toggles,
+                progress_color="#e4e4e7"
+            )
+            if self.show_pose_box:
+                self.sw_pose_box.select()
+            self.sw_pose_box.pack(anchor="w", padx=14, pady=(4, 12))
+
+    # ==============================================================
+    # MODE SPECIFIC CALLBACKS
+    # ==============================================================
+    def _on_seg_display_change(self, val):
+        mapping = {"Masques + Boîtes": "both", "Masques seuls": "masks", "Boîtes seules": "boxes"}
+        self.seg_display_mode = mapping.get(val, "both")
+        self.reprocess_current_frame()
+
+    def _on_seg_preset_selected(self, choice):
+        self.seg_targets = self.seg_presets.get(choice, None)
+        self.reprocess_current_frame()
+
+    def _set_world_preset(self, classes):
+        self.world_classes = classes
+        self.txt_world_classes.delete("1.0", "end")
+        self.txt_world_classes.insert("1.0", ", ".join(classes))
+        self._apply_world_classes()
+
+    def _apply_world_classes(self):
+        text = self.txt_world_classes.get("1.0", "end").strip()
+        classes = [c.strip().lower() for c in text.split(",") if c.strip()]
+        if classes:
+            self.world_classes = classes
+            model = self._get_model("world")
+            try:
+                model.set_classes(self.world_classes)
+            except Exception as e:
+                print(f"[WARN] Error updating YOLO-World classes: {e}")
+            self.reprocess_current_frame()
+
+    def _on_pose_toggles(self):
+        self.show_skeleton = self.sw_skel.get()
+        self.show_joints = self.sw_joints.get()
+        self.show_pose_box = self.sw_pose_box.get()
+        self.reprocess_current_frame()
+
+    # ==============================================================
+    # STREAM ACQUISITION (AVFoundation on macOS)
     # ==============================================================
     def _open_stream(self):
         with self.lock:
@@ -472,13 +680,11 @@ class VisionStudio(ctk.CTk):
             self.camera_error_msg = None
 
             if self.is_webcam:
-                # Use macOS AVFoundation directly
                 backend = cv2.CAP_AVFOUNDATION if sys.platform == "darwin" else cv2.CAP_ANY
                 self.cap = cv2.VideoCapture(0, backend)
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-                # Verify opened
                 opened = self.cap.isOpened()
                 if opened:
                     ret, test_frame = self.cap.read()
@@ -487,10 +693,8 @@ class VisionStudio(ctk.CTk):
 
                 if not opened:
                     self.camera_error_msg = "Accès Webcam refusé sur macOS.\nAutorisez Terminal dans Réglages Système > Confidentialité > Caméra."
-                    self.lbl_stream_status.configure(text="✕ Caméra non autorisée", text_color="#ef4444")
                     self.btn_fix_camera.pack(fill="x", padx=14, pady=(0, 10))
                 else:
-                    self.lbl_stream_status.configure(text="● Webcam FaceTime HD active", text_color="#22c55e")
                     self.btn_fix_camera.pack_forget()
 
                 self.total_frames = 0
@@ -509,7 +713,7 @@ class VisionStudio(ctk.CTk):
 
                 self.cap = cv2.VideoCapture(self.source_path)
                 if not self.cap.isOpened():
-                    self.lbl_stream_status.configure(text="✕ Fichier introuvable", text_color="#ef4444")
+                    self.lbl_src_name.configure(text="✕ Fichier introuvable")
                     return
 
                 self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
@@ -519,9 +723,8 @@ class VisionStudio(ctk.CTk):
                 dur_sec = int(self.total_frames / self.source_fps)
                 self.time_lbl_right.configure(text=f"{dur_sec // 60:02d}:{dur_sec % 60:02d}")
                 self.lbl_src_name.configure(text=f"Source : {os.path.basename(self.source_path)}")
-                self.lbl_stream_status.configure(text="● Vidéo en pause (cliquez sur ▶ Lecture)", text_color="#a1a1aa")
 
-                # Read first frame so it is displayed immediately
+                # Preload frame 0 so it displays on startup
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
                     self.current_raw_frame = frame
@@ -560,15 +763,11 @@ class VisionStudio(ctk.CTk):
             self.reprocess_current_frame()
 
     # ==============================================================
-    # CONTROLS & INSTANT REACTIVITY (Every click updates immediately)
+    # MEDIA CONTROLS & REACTIVITY
     # ==============================================================
     def toggle_play(self):
         self.is_playing = not self.is_playing
         self.btn_play.configure(text="▶ Lecture" if not self.is_playing else "⏸ Pause")
-        self.lbl_stream_status.configure(
-            text="⏸ En pause" if not self.is_playing else "● En lecture",
-            text_color="#f59e0b" if not self.is_playing else "#22c55e"
-        )
         if not self.is_playing:
             self.reprocess_current_frame()
 
@@ -579,6 +778,10 @@ class VisionStudio(ctk.CTk):
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             self.current_frame_idx = 0
             self.timeline_slider.set(0)
+            ret, frame = self.cap.read()
+            if ret and frame is not None:
+                self.current_raw_frame = frame
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         self.reprocess_current_frame()
 
     def _on_seek(self, value):
@@ -597,36 +800,6 @@ class VisionStudio(ctk.CTk):
         mapping = {"0.25x": 0.25, "0.5x": 0.5, "1x": 1.0, "1.5x": 1.5, "2x": 2.0}
         self.speed_factor = mapping.get(speed_str, 1.0)
 
-    def _on_display_mode_change(self, mode_str):
-        mapping = {
-            "Masques + Boîtes": "both",
-            "Masques seuls": "masks",
-            "Boîtes seules": "boxes"
-        }
-        self.display_mode = mapping.get(mode_str, "both")
-        self.reprocess_current_frame()
-
-    def _on_param_modified(self):
-        self.show_labels = self.sw_labels.get()
-        self.mirror_mode = self.sw_mirror.get()
-        self.reprocess_current_frame()
-
-    def _on_preset_selected(self, choice):
-        self.active_targets = self.target_presets.get(choice, None)
-        self.entry_custom.delete(0, "end")
-        self.reprocess_current_frame()
-
-    def _apply_custom_filter(self):
-        text = self.entry_custom.get().strip()
-        if not text:
-            self.active_targets = None
-            self.opt_preset.set("Tous les objets (80)")
-        else:
-            items = [i.strip().lower() for i in text.split(",") if i.strip()]
-            self.active_targets = items if items else None
-            self.opt_preset.set("Filtre personnalisé")
-        self.reprocess_current_frame()
-
     def _on_conf_drag(self, val):
         self.conf_threshold = float(val)
         self.lbl_conf.configure(text=f"Confiance : {int(self.conf_threshold * 100)}%")
@@ -639,10 +812,10 @@ class VisionStudio(ctk.CTk):
             filename = f"capture_{int(time.time())}.jpg"
             bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             cv2.imwrite(filename, bgr)
-            messagebox.showinfo("Capture Sauvegardée", f"Image enregistrée avec succès :\n{filename}")
+            messagebox.showinfo("Capture Sauvegardée", f"Image enregistrée sous :\n{filename}")
 
     # ==============================================================
-    # IMMEDIATE REPROCESSING (Makes every control 100% active on click)
+    # INFERENCE PIPELINES (Segmentation, Open-Vocabulary, Pose)
     # ==============================================================
     def reprocess_current_frame(self):
         with self.lock:
@@ -665,70 +838,129 @@ class VisionStudio(ctk.CTk):
         if self.is_webcam and self.mirror_mode:
             display_frame = cv2.flip(display_frame, 1)
 
-        # Resolve target IDs
-        target_ids = None
-        if self.active_targets is not None:
-            all_names = self.model.names
-            name_to_id = {v.lower(): k for k, v in all_names.items()}
-            target_ids = [name_to_id[t] for t in self.active_targets if t in name_to_id]
-            if not target_ids and len(self.active_targets) > 0:
-                target_ids = [-1]
-
-        try:
-            results = self.model.predict(
-                display_frame,
-                device=self.device,
-                classes=target_ids,
-                conf=self.conf_threshold,
-                verbose=False
-            )
-            r = results[0]
-        except Exception:
+        model = self._get_model(self.current_mode)
+        if model is None:
             return display_frame, 0
 
-        overlay = display_frame.copy()
-        all_names = self.model.names
+        # --- 1. MODE SEGMENTATION ---
+        if self.current_mode == "segmentation":
+            target_ids = None
+            if self.seg_targets is not None:
+                all_names = model.names
+                name_to_id = {v.lower(): k for k, v in all_names.items()}
+                target_ids = [name_to_id[t] for t in self.seg_targets if t in name_to_id]
+                if not target_ids and len(self.seg_targets) > 0:
+                    target_ids = [-1]
 
-        # 1. Masks
-        if self.display_mode in ["both", "masks"] and r.masks is not None and len(r.masks) > 0:
-            for mask_coords, box in zip(r.masks.xy, r.boxes):
-                cls_id = int(box.cls[0].item())
-                color = [int(c) for c in self.color_palette[cls_id % len(self.color_palette)]]
-                if len(mask_coords) > 0:
-                    poly = np.array(mask_coords, dtype=np.int32)
-                    cv2.fillPoly(overlay, [poly], color)
-                    cv2.polylines(display_frame, [poly], isClosed=True, color=color, thickness=2)
+            try:
+                results = model.predict(display_frame, device=self.device, classes=target_ids, conf=self.conf_threshold, verbose=False)
+                r = results[0]
+            except Exception:
+                return display_frame, 0
 
-            alpha = 0.40
-            cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
+            overlay = display_frame.copy()
+            if self.seg_display_mode in ["both", "masks"] and r.masks is not None and len(r.masks) > 0:
+                for mask_coords, box in zip(r.masks.xy, r.boxes):
+                    cls_id = int(box.cls[0].item())
+                    color = [int(c) for c in self.color_palette[cls_id % len(self.color_palette)]]
+                    if len(mask_coords) > 0:
+                        poly = np.array(mask_coords, dtype=np.int32)
+                        cv2.fillPoly(overlay, [poly], color)
+                        cv2.polylines(display_frame, [poly], isClosed=True, color=color, thickness=2)
 
-        # 2. Bounding Boxes & Badges
-        count = len(r.boxes) if r.boxes is not None else 0
-        if self.display_mode in ["both", "boxes"] and r.boxes is not None and len(r.boxes) > 0:
-            for box in r.boxes:
-                cls_id = int(box.cls[0].item())
-                conf = float(box.conf[0].item())
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                color = [int(c) for c in self.color_palette[cls_id % len(self.color_palette)]]
+                alpha = 0.40
+                cv2.addWeighted(overlay, alpha, display_frame, 1 - alpha, 0, display_frame)
 
-                cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+            count = len(r.boxes) if r.boxes is not None else 0
+            if self.seg_display_mode in ["both", "boxes"] and r.boxes is not None and len(r.boxes) > 0:
+                for box in r.boxes:
+                    cls_id = int(box.cls[0].item())
+                    conf = float(box.conf[0].item())
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    color = [int(c) for c in self.color_palette[cls_id % len(self.color_palette)]]
 
-                if self.show_labels:
-                    label = f"{all_names[cls_id]} {conf:.2f}"
-                    font_scale = 0.50
-                    thickness = 1
-                    (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                    by1 = max(0, y1 - th - baseline - 4)
-                    by2 = y1
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                    label = f"{model.names[cls_id]} {conf:.2f}"
+                    (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+                    by1 = max(0, y1 - th - base - 4)
                     bx2 = min(w, x1 + tw + 6)
-                    cv2.rectangle(display_frame, (x1, by1), (bx2, by2), color, -1)
-                    cv2.putText(display_frame, label, (x1 + 3, y1 - baseline - 2),
-                                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                    cv2.rectangle(display_frame, (x1, by1), (bx2, y1), color, -1)
+                    cv2.putText(display_frame, label, (x1 + 3, y1 - base - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
 
-        return display_frame, count
+            return display_frame, count
+
+        # --- 2. MODE YOLO-WORLD (Vocabulaire Ouvert) ---
+        elif self.current_mode == "world":
+            try:
+                results = model.predict(display_frame, device=self.device, conf=self.conf_threshold, verbose=False)
+                r = results[0]
+            except Exception:
+                return display_frame, 0
+
+            count = len(r.boxes) if r.boxes is not None else 0
+            if r.boxes is not None and len(r.boxes) > 0:
+                for box in r.boxes:
+                    cls_id = int(box.cls[0].item())
+                    conf = float(box.conf[0].item())
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    color = [int(c) for c in self.color_palette[cls_id % len(self.color_palette)]]
+
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                    name = model.names.get(cls_id, f"obj_{cls_id}")
+                    label = f"{name} {conf:.2f}"
+                    (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+                    by1 = max(0, y1 - th - base - 4)
+                    bx2 = min(w, x1 + tw + 6)
+                    cv2.rectangle(display_frame, (x1, by1), (bx2, y1), color, -1)
+                    cv2.putText(display_frame, label, (x1 + 3, y1 - base - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
+
+            return display_frame, count
+
+        # --- 3. MODE POSE / SQUELETTE & ARTICULATIONS ---
+        elif self.current_mode == "pose":
+            try:
+                results = model.predict(display_frame, device=self.device, conf=self.conf_threshold, verbose=False)
+                r = results[0]
+            except Exception:
+                return display_frame, 0
+
+            persons_count = len(r.keypoints) if r.keypoints is not None else 0
+
+            if r.keypoints is not None and len(r.keypoints) > 0:
+                for person_idx, kpts in enumerate(r.keypoints.xy):
+                    kpts_np = kpts.cpu().numpy()  # (17, 2)
+                    confs = r.keypoints.conf[person_idx].cpu().numpy() if r.keypoints.conf is not None else np.ones(17)
+
+                    # Optional Bounding Box
+                    if self.show_pose_box and r.boxes is not None and person_idx < len(r.boxes):
+                        box = r.boxes[person_idx]
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
+
+                    # Draw Bones (Limbs)
+                    if self.show_skeleton:
+                        for limb_idx, (p1, p2) in enumerate(LIMBS):
+                            if confs[p1] > 0.35 and confs[p2] > 0.35:
+                                pt1 = (int(kpts_np[p1, 0]), int(kpts_np[p1, 1]))
+                                pt2 = (int(kpts_np[p2, 0]), int(kpts_np[p2, 1]))
+                                color = LIMB_COLORS[limb_idx % len(LIMB_COLORS)]
+                                cv2.line(display_frame, pt1, pt2, color, 3, cv2.LINE_AA)
+
+                    # Draw Joints (Keypoints)
+                    if self.show_joints:
+                        for joint_id in range(17):
+                            if confs[joint_id] > 0.35:
+                                jx, jy = int(kpts_np[joint_id, 0]), int(kpts_np[joint_id, 1])
+                                # Glowing double-circle for joints
+                                cv2.circle(display_frame, (jx, jy), 6, (0, 0, 0), -1)
+                                cv2.circle(display_frame, (jx, jy), 4, (0, 255, 127), -1)
+
+            return display_frame, persons_count
+
+        return display_frame, 0
 
     # ==============================================================
-    # CONTINUOUS CAPTURE THREAD
+    # CAPTURE LOOP & GUI REFRESH
     # ==============================================================
     def _stream_loop(self):
         while self.running:
@@ -746,7 +978,6 @@ class VisionStudio(ctk.CTk):
                 ret, frame = self.cap.read()
                 if not ret or frame is None:
                     if not self.is_webcam and self.total_frames > 0:
-                        # Auto loop video
                         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                         self.current_frame_idx = 0
                         ret, frame = self.cap.read()
@@ -757,7 +988,6 @@ class VisionStudio(ctk.CTk):
                 self.current_raw_frame = frame
                 self.current_frame_idx = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
 
-            # Run detection
             annotated, count = self._infer_and_annotate(frame)
             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
 
@@ -765,7 +995,6 @@ class VisionStudio(ctk.CTk):
                 self.latest_display_frame = rgb
                 self.detected_count = count
 
-            # Calculate FPS
             cost = time.perf_counter() - t_start
             fps = 1.0 / cost if cost > 0 else 0
             self.fps_samples.append(fps)
@@ -773,15 +1002,11 @@ class VisionStudio(ctk.CTk):
                 self.fps_samples.pop(0)
             self.current_fps = sum(self.fps_samples) / len(self.fps_samples)
 
-            # Throttling
             target_delay = (1.0 / self.source_fps) / max(0.1, self.speed_factor)
             remaining = target_delay - cost
             if remaining > 0:
                 time.sleep(remaining)
 
-    # ==============================================================
-    # GUI REFRESH TIMER (Main Thread)
-    # ==============================================================
     def _gui_refresh(self):
         if not self.running:
             return
@@ -793,7 +1018,6 @@ class VisionStudio(ctk.CTk):
             fps_val = self.current_fps
             err = self.camera_error_msg
 
-        # Display Frame or Error Message
         canvas_w = max(100, self.canvas.winfo_width())
         canvas_h = max(100, self.canvas.winfo_height())
 
@@ -822,14 +1046,16 @@ class VisionStudio(ctk.CTk):
                 self.canvas.delete("all")
                 self.canvas.create_image(canvas_w // 2, canvas_h // 2, image=self.tk_photo, anchor="center")
 
-        # Update Timeline & Telemetry
         if not self.is_webcam and self.total_frames > 0:
             self.timeline_slider.set(cur_idx)
             sec = int(cur_idx / self.source_fps)
             self.time_lbl_left.configure(text=f"{sec // 60:02d}:{sec % 60:02d}")
 
         self.lbl_fps.configure(text=f"FPS : {fps_val:.1f} ({self.device.upper()})")
-        self.lbl_det_count.configure(text=f"Détections : {det_count}")
+        if self.current_mode == "pose":
+            self.lbl_det_count.configure(text=f"Personnes / Postures : {det_count}")
+        else:
+            self.lbl_det_count.configure(text=f"Détections : {det_count}")
 
         self.after(25, self._gui_refresh)
 
