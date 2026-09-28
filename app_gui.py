@@ -40,6 +40,19 @@ def generate_color_palette(num_classes=80):
     return np.random.randint(60, 240, size=(num_classes, 3), dtype=np.uint8)
 
 
+def ensure_holistic_model():
+    task_path = os.path.join(PROJECT_DIR, "holistic_landmarker.task")
+    if not os.path.exists(task_path):
+        import urllib.request
+        url = "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/holistic_landmarker/float16/latest/holistic_landmarker.task"
+        try:
+            print(f"[INFO] Téléchargement du modèle Haute Précision ({url})...")
+            urllib.request.urlretrieve(url, task_path)
+        except Exception as e:
+            print(f"[ERROR] Impossible de télécharger le modèle : {e}")
+    return task_path
+
+
 # COCO 17 Keypoints definitions for Pose
 LIMBS = [
     (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),   # Shoulders & arms
@@ -124,9 +137,14 @@ class VisionStudio(ctk.CTk):
         self.world_initialized = False
 
         # Mode 3: Pose settings
+        self.pose_precision = "yolo"  # "yolo" (17 pts) or "holistic" (75 pts corps + mains)
         self.show_skeleton = True
         self.show_joints = True
         self.show_pose_box = False
+        self.show_pose_body = True
+        self.show_pose_hands = True
+        self.show_pose_face = False
+        self.holistic_detector = None
 
         # Global parameters
         self.show_labels = True
@@ -168,6 +186,21 @@ class VisionStudio(ctk.CTk):
             elif mode == "pose":
                 self.models["pose"] = YOLO("yolo11n-pose.pt")
         return self.models.get(mode)
+
+    def _get_holistic_detector(self):
+        if self.holistic_detector is None:
+            import mediapipe as mp
+            from mediapipe.tasks import python as mp_python
+            from mediapipe.tasks.python import vision
+
+            task_path = ensure_holistic_model()
+            base_options = mp_python.BaseOptions(model_asset_path=task_path)
+            options = vision.HolisticLandmarkerOptions(
+                base_options=base_options,
+                output_face_blendshapes=False
+            )
+            self.holistic_detector = vision.HolisticLandmarker.create_from_options(options)
+        return self.holistic_detector
 
     # ==============================================================
     # UI CONSTRUCTION (Top Tabs & Two-Pane Architecture)
@@ -633,38 +666,105 @@ class VisionStudio(ctk.CTk):
             # --- Pose / Skeleton Options ---
             card_pose = self._make_card(self.mode_controls_container, "Squelette & Articulations")
 
-            self.sw_skel = ctk.CTkSwitch(
+            # Granularity selector
+            ctk.CTkLabel(
                 card_pose,
-                text="Tracer les os / membres (lignes)",
-                font=ctk.CTkFont(size=12),
-                command=self._on_pose_toggles,
-                progress_color="#e4e4e7"
-            )
-            if self.show_skeleton:
-                self.sw_skel.select()
-            self.sw_skel.pack(anchor="w", padx=14, pady=(8, 4))
+                text="Modèle d'analyse corporelle :",
+                font=ctk.CTkFont(size=11),
+                text_color="#a1a1aa"
+            ).pack(anchor="w", padx=14, pady=(6, 2))
 
-            self.sw_joints = ctk.CTkSwitch(
+            self.seg_precision = ctk.CTkSegmentedButton(
                 card_pose,
-                text="Afficher les 17 articulations (points)",
-                font=ctk.CTkFont(size=12),
-                command=self._on_pose_toggles,
-                progress_color="#e4e4e7"
+                values=["Squelette (17 pts)", "Haute Précision (Corps + Mains)"],
+                command=self._on_pose_precision_change,
+                fg_color="#18181b",
+                selected_color="#27272a",
+                selected_hover_color="#3f3f46",
+                unselected_color="#18181b",
+                height=30
             )
-            if self.show_joints:
-                self.sw_joints.select()
-            self.sw_joints.pack(anchor="w", padx=14, pady=4)
+            self.seg_precision.set("Haute Précision (Corps + Mains)" if self.pose_precision == "holistic" else "Squelette (17 pts)")
+            self.seg_precision.pack(fill="x", padx=14, pady=(0, 10))
 
-            self.sw_pose_box = ctk.CTkSwitch(
-                card_pose,
-                text="Boîte englobante de la personne",
-                font=ctk.CTkFont(size=12),
-                command=self._on_pose_toggles,
-                progress_color="#e4e4e7"
-            )
-            if self.show_pose_box:
-                self.sw_pose_box.select()
-            self.sw_pose_box.pack(anchor="w", padx=14, pady=(4, 10))
+            if self.pose_precision == "yolo":
+                self.sw_skel = ctk.CTkSwitch(
+                    card_pose,
+                    text="Tracer les os / membres (lignes)",
+                    font=ctk.CTkFont(size=12),
+                    command=self._on_pose_toggles,
+                    progress_color="#e4e4e7"
+                )
+                if self.show_skeleton:
+                    self.sw_skel.select()
+                self.sw_skel.pack(anchor="w", padx=14, pady=(4, 4))
+
+                self.sw_joints = ctk.CTkSwitch(
+                    card_pose,
+                    text="Afficher les 17 articulations (points)",
+                    font=ctk.CTkFont(size=12),
+                    command=self._on_pose_toggles,
+                    progress_color="#e4e4e7"
+                )
+                if self.show_joints:
+                    self.sw_joints.select()
+                self.sw_joints.pack(anchor="w", padx=14, pady=4)
+
+                self.sw_pose_box = ctk.CTkSwitch(
+                    card_pose,
+                    text="Boîte englobante de la personne",
+                    font=ctk.CTkFont(size=12),
+                    command=self._on_pose_toggles,
+                    progress_color="#e4e4e7"
+                )
+                if self.show_pose_box:
+                    self.sw_pose_box.select()
+                self.sw_pose_box.pack(anchor="w", padx=14, pady=(4, 10))
+
+            else:
+                self.sw_body = ctk.CTkSwitch(
+                    card_pose,
+                    text="🦴 Corps & membres complets (33 pts)",
+                    font=ctk.CTkFont(size=12),
+                    command=self._on_holistic_toggles,
+                    progress_color="#e4e4e7"
+                )
+                if self.show_pose_body:
+                    self.sw_body.select()
+                self.sw_body.pack(anchor="w", padx=14, pady=(4, 4))
+
+                self.sw_hands = ctk.CTkSwitch(
+                    card_pose,
+                    text="🖐️ Mains & doigts détaillés (42 pts)",
+                    font=ctk.CTkFont(size=12),
+                    command=self._on_holistic_toggles,
+                    progress_color="#e4e4e7"
+                )
+                if self.show_pose_hands:
+                    self.sw_hands.select()
+                self.sw_hands.pack(anchor="w", padx=14, pady=4)
+
+                self.sw_joints_h = ctk.CTkSwitch(
+                    card_pose,
+                    text="✨ Points d'articulation lumineux",
+                    font=ctk.CTkFont(size=12),
+                    command=self._on_holistic_toggles,
+                    progress_color="#e4e4e7"
+                )
+                if self.show_joints:
+                    self.sw_joints_h.select()
+                self.sw_joints_h.pack(anchor="w", padx=14, pady=4)
+
+                self.sw_face = ctk.CTkSwitch(
+                    card_pose,
+                    text="🙂 Maillage expressif du visage",
+                    font=ctk.CTkFont(size=12),
+                    command=self._on_holistic_toggles,
+                    progress_color="#e4e4e7"
+                )
+                if self.show_pose_face:
+                    self.sw_face.select()
+                self.sw_face.pack(anchor="w", padx=14, pady=(4, 10))
 
             # Quick sample switchers for Pose
             tip_card = ctk.CTkFrame(card_pose, fg_color="#121215", corner_radius=6, border_width=1, border_color="#27272a")
@@ -746,10 +846,29 @@ class VisionStudio(ctk.CTk):
                 print(f"[WARN] Error updating YOLO-World classes: {e}")
             self.reprocess_current_frame()
 
+    def _on_pose_precision_change(self, val):
+        if "Haute Précision" in val:
+            self.pose_precision = "holistic"
+            try:
+                self._get_holistic_detector()
+            except Exception as e:
+                print(f"[WARN] Erreur chargement Holistic: {e}")
+        else:
+            self.pose_precision = "yolo"
+        self._render_mode_controls()
+        self.reprocess_current_frame()
+
     def _on_pose_toggles(self):
         self.show_skeleton = self.sw_skel.get()
         self.show_joints = self.sw_joints.get()
         self.show_pose_box = self.sw_pose_box.get()
+        self.reprocess_current_frame()
+
+    def _on_holistic_toggles(self):
+        self.show_pose_body = self.sw_body.get()
+        self.show_pose_hands = self.sw_hands.get()
+        self.show_joints = self.sw_joints_h.get()
+        self.show_pose_face = self.sw_face.get()
         self.reprocess_current_frame()
 
     # ==============================================================
@@ -760,6 +879,13 @@ class VisionStudio(ctk.CTk):
             if self.cap is not None:
                 self.cap.release()
                 self.cap = None
+
+            if self.holistic_detector is not None:
+                try:
+                    self.holistic_detector.close()
+                except Exception:
+                    pass
+                self.holistic_detector = None
 
             self.camera_error_msg = None
 
@@ -1033,46 +1159,138 @@ class VisionStudio(ctk.CTk):
 
         # --- 3. MODE POSE / SQUELETTE & ARTICULATIONS ---
         elif self.current_mode == "pose":
+            if self.pose_precision == "holistic":
+                return self._infer_and_annotate_holistic(display_frame)
+            else:
+                return self._infer_and_annotate_yolo_pose(model, display_frame)
+
+        return display_frame, 0
+
+    def _infer_and_annotate_yolo_pose(self, model, display_frame):
+        h, w, _ = display_frame.shape
+        try:
+            results = model.predict(display_frame, device=self.device, conf=self.conf_threshold, verbose=False)
+            r = results[0]
+        except Exception:
+            return display_frame, 0
+
+        persons_count = len(r.keypoints) if r.keypoints is not None else 0
+
+        if r.keypoints is not None and len(r.keypoints) > 0:
+            for person_idx, kpts in enumerate(r.keypoints.xy):
+                kpts_np = kpts.cpu().numpy()  # (17, 2)
+                confs = r.keypoints.conf[person_idx].cpu().numpy() if r.keypoints.conf is not None else np.ones(17)
+
+                # Optional Bounding Box
+                if self.show_pose_box and r.boxes is not None and person_idx < len(r.boxes):
+                    box = r.boxes[person_idx]
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
+
+                # Draw Bones (Limbs)
+                if self.show_skeleton:
+                    for limb_idx, (p1, p2) in enumerate(LIMBS):
+                        if confs[p1] > 0.35 and confs[p2] > 0.35:
+                            pt1 = (int(kpts_np[p1, 0]), int(kpts_np[p1, 1]))
+                            pt2 = (int(kpts_np[p2, 0]), int(kpts_np[p2, 1]))
+                            color = LIMB_COLORS[limb_idx % len(LIMB_COLORS)]
+                            cv2.line(display_frame, pt1, pt2, color, 3, cv2.LINE_AA)
+
+                # Draw Joints (Keypoints)
+                if self.show_joints:
+                    for joint_id in range(17):
+                        if confs[joint_id] > 0.35:
+                            jx, jy = int(kpts_np[joint_id, 0]), int(kpts_np[joint_id, 1])
+                            cv2.circle(display_frame, (jx, jy), 6, (0, 0, 0), -1)
+                            cv2.circle(display_frame, (jx, jy), 4, (0, 255, 127), -1)
+
+        return display_frame, persons_count
+
+    def _infer_and_annotate_holistic(self, display_frame):
+        detector = self._get_holistic_detector()
+        if detector is None:
+            return display_frame, 0
+
+        h, w, _ = display_frame.shape
+        import mediapipe as mp
+        from mediapipe.tasks.python import vision
+
+        rgb_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+        mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+
+        try:
+            res = detector.detect(mp_img)
+        except Exception:
+            # Recreate detector if frame resolution changed between videos/camera
             try:
-                results = model.predict(display_frame, device=self.device, conf=self.conf_threshold, verbose=False)
-                r = results[0]
+                self.holistic_detector.close()
+            except Exception:
+                pass
+            self.holistic_detector = None
+            try:
+                detector = self._get_holistic_detector()
+                res = detector.detect(mp_img)
             except Exception:
                 return display_frame, 0
 
-            persons_count = len(r.keypoints) if r.keypoints is not None else 0
+        detected_parts = 0
+        if res.pose_landmarks:
+            detected_parts += 1
+        if res.left_hand_landmarks:
+            detected_parts += 1
+        if res.right_hand_landmarks:
+            detected_parts += 1
 
-            if r.keypoints is not None and len(r.keypoints) > 0:
-                for person_idx, kpts in enumerate(r.keypoints.xy):
-                    kpts_np = kpts.cpu().numpy()  # (17, 2)
-                    confs = r.keypoints.conf[person_idx].cpu().numpy() if r.keypoints.conf is not None else np.ones(17)
+        # 1. Face Contours (discrete silvery lavender lines)
+        if self.show_pose_face and res.face_landmarks:
+            face_color = (220, 200, 255)
+            for conn in vision.FaceLandmarksConnections.FACE_LANDMARKS_CONTOURS:
+                p1, p2 = res.face_landmarks[conn.start], res.face_landmarks[conn.end]
+                x1, y1 = int(p1.x * w), int(p1.y * h)
+                x2, y2 = int(p2.x * w), int(p2.y * h)
+                cv2.line(display_frame, (x1, y1), (x2, y2), face_color, 1, cv2.LINE_AA)
 
-                    # Optional Bounding Box
-                    if self.show_pose_box and r.boxes is not None and person_idx < len(r.boxes):
-                        box = r.boxes[person_idx]
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
+        # 2. Body Pose (33 points)
+        if self.show_pose_body and res.pose_landmarks:
+            for limb_idx, conn in enumerate(vision.PoseLandmarksConnections.POSE_LANDMARKS):
+                p1, p2 = res.pose_landmarks[conn.start], res.pose_landmarks[conn.end]
+                v1 = p1.visibility if hasattr(p1, "visibility") and p1.visibility is not None else 1.0
+                v2 = p2.visibility if hasattr(p2, "visibility") and p2.visibility is not None else 1.0
+                if v1 > 0.30 and v2 > 0.30:
+                    x1, y1 = int(p1.x * w), int(p1.y * h)
+                    x2, y2 = int(p2.x * w), int(p2.y * h)
+                    color = LIMB_COLORS[limb_idx % len(LIMB_COLORS)]
+                    cv2.line(display_frame, (x1, y1), (x2, y2), color, 3, cv2.LINE_AA)
 
-                    # Draw Bones (Limbs)
-                    if self.show_skeleton:
-                        for limb_idx, (p1, p2) in enumerate(LIMBS):
-                            if confs[p1] > 0.35 and confs[p2] > 0.35:
-                                pt1 = (int(kpts_np[p1, 0]), int(kpts_np[p1, 1]))
-                                pt2 = (int(kpts_np[p2, 0]), int(kpts_np[p2, 1]))
-                                color = LIMB_COLORS[limb_idx % len(LIMB_COLORS)]
-                                cv2.line(display_frame, pt1, pt2, color, 3, cv2.LINE_AA)
+            if self.show_joints:
+                for lm in res.pose_landmarks:
+                    v = lm.visibility if hasattr(lm, "visibility") and lm.visibility is not None else 1.0
+                    if v > 0.30:
+                        jx, jy = int(lm.x * w), int(lm.y * h)
+                        cv2.circle(display_frame, (jx, jy), 5, (0, 0, 0), -1)
+                        cv2.circle(display_frame, (jx, jy), 3, (0, 255, 127), -1)
 
-                    # Draw Joints (Keypoints)
+        # 3. Hands & Fingers (Left + Right, 21 points each)
+        if self.show_pose_hands:
+            hands = [
+                (res.left_hand_landmarks, (255, 230, 0), (0, 255, 255)),   # Left hand: golden cyan
+                (res.right_hand_landmarks, (255, 128, 0), (0, 255, 200))  # Right hand: orange cyan
+            ]
+            for hand_lms, line_col, dot_col in hands:
+                if hand_lms:
+                    for conn in vision.HandLandmarksConnections.HAND_CONNECTIONS:
+                        p1, p2 = hand_lms[conn.start], hand_lms[conn.end]
+                        x1, y1 = int(p1.x * w), int(p1.y * h)
+                        x2, y2 = int(p2.x * w), int(p2.y * h)
+                        cv2.line(display_frame, (x1, y1), (x2, y2), line_col, 2, cv2.LINE_AA)
+
                     if self.show_joints:
-                        for joint_id in range(17):
-                            if confs[joint_id] > 0.35:
-                                jx, jy = int(kpts_np[joint_id, 0]), int(kpts_np[joint_id, 1])
-                                # Glowing double-circle for joints
-                                cv2.circle(display_frame, (jx, jy), 6, (0, 0, 0), -1)
-                                cv2.circle(display_frame, (jx, jy), 4, (0, 255, 127), -1)
+                        for lm in hand_lms:
+                            jx, jy = int(lm.x * w), int(lm.y * h)
+                            cv2.circle(display_frame, (jx, jy), 4, (0, 0, 0), -1)
+                            cv2.circle(display_frame, (jx, jy), 2, dot_col, -1)
 
-            return display_frame, persons_count
-
-        return display_frame, 0
+        return display_frame, detected_parts
 
     # ==============================================================
     # CAPTURE LOOP & GUI REFRESH
@@ -1168,7 +1386,10 @@ class VisionStudio(ctk.CTk):
 
         self.lbl_fps.configure(text=f"FPS : {fps_val:.1f} ({self.device.upper()})")
         if self.current_mode == "pose":
-            self.lbl_det_count.configure(text=f"Personnes / Postures : {det_count}")
+            if self.pose_precision == "holistic":
+                self.lbl_det_count.configure(text=f"Parties détectées : {det_count} (Corps/Mains)")
+            else:
+                self.lbl_det_count.configure(text=f"Personnes / Postures : {det_count}")
         else:
             self.lbl_det_count.configure(text=f"Détections : {det_count}")
 
@@ -1179,6 +1400,11 @@ class VisionStudio(ctk.CTk):
         with self.lock:
             if self.cap is not None:
                 self.cap.release()
+            if self.holistic_detector is not None:
+                try:
+                    self.holistic_detector.close()
+                except Exception:
+                    pass
         self.destroy()
 
 

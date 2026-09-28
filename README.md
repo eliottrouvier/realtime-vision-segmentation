@@ -35,10 +35,13 @@ Basculez instantanément en un clic entre 3 paradigmes de vision grâce aux ongl
 - **Saisie en langage naturel** : tapez n'importe quel mot en texte libre pour le détecter en temps réel sur le flux vidéo ou la webcam !
 - **Boutons de presets rapides** : Vêtements, Bureau, Général.
 
-### 3. 🦴 Squelette & Articulations Corporelles (`YOLO-Pose`)
-- Reconnaissance et suivi en direct des **17 articulations majeures** du corps humain (épaules, coudes, poignets, hanches, genoux, chevilles, tête).
-- Tracé du squelette (membres et posture) avec points d'articulation lumineux.
-- Parfait pour voir en direct les mouvements des bras, des jambes et la posture via la webcam ou la vidéo.
+### 3. 🦴 Squelette & Articulations Corporelles (Double Moteur)
+Basculez dans le panneau latéral entre deux niveaux de granularité selon vos besoins :
+- **⚡ Squelette Rapide (17 points - YOLO11-Pose)** : Détection temps réel ultra-rapide des 17 articulations majeures (épaules, coudes, poignets, hanches, genoux, chevilles, tête).
+- **🔬 Haute Précision (75+ points - MediaPipe Holistic)** :
+  - **Corps complet (33 points)** : intègre les pouces, index, talons, chevilles et orteils pour chaque membre.
+  - **Mains & Doigts ultra-détaillés (42 points)** : chaque phalange, articulation et bout des doigts est tracé indépendamment (21 points par main).
+  - **Maillage facial expressif (478 points)** : contours délicats du visage, des yeux et des lèvres activables à la demande.
 
 ---
 
