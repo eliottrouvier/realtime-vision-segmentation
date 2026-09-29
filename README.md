@@ -1,6 +1,7 @@
 # Vision Studio — Suite Multi-Modes de Vision par Ordinateur
 
-Studio de vision par ordinateur tout-en-un optimisé pour Mac Apple Silicon (**MPS**), intégrant segmentation d'instances, détection universelle en vocabulaire ouvert et estimation de posture en temps réel.
+> **Tech Stack : Python • PyTorch (MPS) • YOLO11 • YOLO-World • MediaPipe • PySide6 • OpenCV**  
+> All-in-one real-time computer vision suite accelerated on Apple Silicon MPS, integrating instance segmentation, open-vocabulary detection, and multi-granularity pose tracking.
 
 ---
 
